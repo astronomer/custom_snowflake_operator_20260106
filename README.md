@@ -4,13 +4,13 @@ Airflow project for testing Snowflake operators with a custom `SnowflakeSqlApiOp
 
 ## Project Overview
 
-This project explores different Snowflake operators in Apache Airflow:
-- **SQLExecuteQueryOperator**: Standard SQL operator (non-deferrable)
+This project compares different Snowflake operators in Apache Airflow:
+- **SQLExecuteQueryOperator**: Standard SQL operator using Snowflake Python connector
 - **SnowflakeSqlApiOperator**: REST API-based operator (supports deferrable mode)
 
 The custom `SnowflakeSqlApiOperator` extends the base operator to:
-- Fetch and return actual query results (not just query IDs)
-- Support `do_xcom_push` parameter
+- Fetch and return actual query results (list of tuples, same format as SQLExecuteQueryOperator)
+- Support `fetch_results` parameter to toggle between query IDs and actual results
 - Support `return_last` parameter for multi-statement queries
 - Work in both synchronous and deferrable modes
 
@@ -19,7 +19,7 @@ The custom `SnowflakeSqlApiOperator` extends the base operator to:
 ```
 .
 ├── dags/
-│   ├── example_dag.py              # Main DAG
+│   ├── example_dag.py              # Main DAG with all test scenarios
 │   └── test_connection.py          # Connection testing DAG
 ├── include/
 │   └── operators/
@@ -34,38 +34,58 @@ The custom `SnowflakeSqlApiOperator` extends the base operator to:
 
 ### SnowflakeSqlApiOperator
 
-Located in `include/operators/snowflake.py`, this custom operator extends the base `SnowflakeSqlApiOperator` to fetch query results:
+Located in `include/operators/snowflake.py`, this custom operator extends the base `SnowflakeSqlApiOperator`:
 
-**Key Features:**
-- **`conn_id`** parameter: Uses `conn_id` (not `snowflake_conn_id`) for easy drop-in replacement of `SQLExecuteQueryOperator`
-- **`do_xcom_push`** (default: `True`): Fetch and return query results to XComs
-- **`return_last`** (default: `True`): Return only the last result from multi-statement queries
-- **Deferrable mode support**: Works with `deferrable=True` to free up worker slots
+**Parameters:**
+- **`conn_id`**: Snowflake connection ID (uses `conn_id` instead of `snowflake_conn_id` for SQLExecuteQueryOperator compatibility)
+- **`fetch_results`** (default: `False`): When `True`, fetches and returns query results as list of tuples
+- **`return_last`** (default: `True`): When `True`, returns only the last result from multi-statement queries
+- **`deferrable`** (default: `False`): When `True`, uses async execution to free worker slots
 
 **Usage:**
 ```python
 from include.operators.snowflake import SnowflakeSqlApiOperator
 
+# Default behavior (returns query IDs, same as base operator)
 task = SnowflakeSqlApiOperator(
     task_id="query_snowflake",
     sql="SELECT CURRENT_TIMESTAMP();",
     conn_id="snowflake_default",
-    deferrable=True,           # Optional: async execution
-    do_xcom_push=True,        # Return results
-    return_last=True,         # Return last result only
+    deferrable=True,
+)
+
+# Fetch results (returns list of tuples like SQLExecuteQueryOperator)
+task_with_results = SnowflakeSqlApiOperator(
+    task_id="query_with_results",
+    sql="SELECT CURRENT_TIMESTAMP();",
+    conn_id="snowflake_default",
+    fetch_results=True,
 )
 ```
 
 ## Example DAG
 
-The `example_dag` runs 6 tasks sequentially to compare performance:
+The `example_dag` contains 4 task groups testing different scenarios:
 
-1. **sql_single**: SQLExecuteQueryOperator (single query)
-2. **api_single**: SnowflakeSqlApiOperator (single query, non-deferrable)
-3. **api_single_defer**: SnowflakeSqlApiOperator (single query, deferrable)
-4. **sql_multi**: SQLExecuteQueryOperator (multi-query)
-5. **api_multi**: SnowflakeSqlApiOperator (multi-query, non-deferrable)
-6. **api_multi_defer**: SnowflakeSqlApiOperator (multi-query, deferrable)
+### Task Groups
+
+1. **single_query**: Single query with all `fetch_results` x `deferrable` combinations
+2. **multi_query**: Multi-statement queries with all `return_last` x `fetch_results` x `deferrable` combinations
+3. **sql_execute_query**: SQLExecuteQueryOperator comparison tasks
+4. **parameterized_queries**: Parameter binding and Jinja templating examples
+
+### Parameterized Queries
+
+The DAG demonstrates different parameter styles:
+
+| Operator | Style | Syntax | Example |
+|----------|-------|--------|---------|
+| SQLExecuteQueryOperator | Positional | `%s` | `parameters=["value"]` |
+| SQLExecuteQueryOperator | Named | `%(name)s` | `parameters={"name": "value"}` |
+| SnowflakeSqlApiOperator | Bindings | `?` | `bindings={"1": {"type": "TEXT", "value": "..."}}` |
+| Both | Jinja | `{{ params.name }}` | `params={"name": "value"}` |
+
+**Note:** `%` style parameters are NOT supported with `SnowflakeSqlApiOperator` - use `?` with bindings only.
 
 ## Setup
 
@@ -73,7 +93,7 @@ The `example_dag` runs 6 tasks sequentially to compare performance:
 
 - [Astro CLI](https://www.astronomer.io/docs/astro/cli/overview) installed
 - Snowflake connection configured with key-pair authentication (Connection ID: `snowflake_default`)
-- See [Create a Snowflake Connection in Airflow](https://www.astronomer.io/docs/learn/connections/snowflake) for detailed setup instructions
+- See [Create a Snowflake Connection in Airflow](https://www.astronomer.io/docs/learn/connections/snowflake) for setup instructions
 
 ### Local Development
 
@@ -98,58 +118,39 @@ astro deploy <DEPLOYMENT_ID> --force
 
 ### Authentication
 
-The `SnowflakeSqlApiOperator` requires **key-pair authentication** (RSA public/private key). 
+The `SnowflakeSqlApiOperator` requires **key-pair authentication** (RSA public/private key).
 
 **Key Configuration:**
 - **Local development**: Use `private_key_file` path in `airflow_settings.yaml`
 - **Astronomer deployment**: Use base64-encoded `private_key_content` in connection extra field
 - **Provider version**: Requires `apache-airflow-providers-snowflake>=6.3.0` for base64 encoding
 
-See the [Astronomer Snowflake Connection guide](https://www.astronomer.io/docs/learn/connections/snowflake) for complete setup instructions.
-
 ## Testing
 
-### Test Connection
 ```bash
+# Test connection
 astro dev run dags test test_connection
-```
 
-### Test DAG
-```bash
+# Test example DAG
 astro dev run dags test example_dag
-```
 
-### Run Linter
-```bash
+# Run linter
 ruff check --fix .
 ruff format .
 ```
 
-## Performance Comparison
+## Operator Comparison
 
-### SQLExecuteQueryOperator
-- Uses JDBC-style connection (`snowflake-connector-python`)
-- Blocks worker during query execution
-- Simple password authentication
-- Good for short queries
-
-### SnowflakeSqlApiOperator (Custom)
-- Uses REST API (`SnowflakeSqlApiHook`)
-- Supports deferrable mode (frees worker slots)
-- Requires key-pair authentication
-- Better for long-running queries
-- Can handle multiple statements efficiently
-- **Drop-in replacement**: Uses `conn_id` parameter for easy migration from `SQLExecuteQueryOperator`
-
-### Deferrable Mode Benefits
-- Frees up worker slots during query execution
-- Triggerer node handles polling
-- Better resource utilization
-- Recommended for queries >1 minute
+| Feature | SQLExecuteQueryOperator | SnowflakeSqlApiOperator (Custom) |
+|---------|------------------------|----------------------------------|
+| Connection | Python connector (JDBC-style) | REST API |
+| Deferrable | No | Yes |
+| Authentication | Password or key-pair | Key-pair only |
+| Parameters | `%s`, `%(name)s` | `?` with bindings |
+| Output format | List of tuples | List of tuples (with `fetch_results=True`) |
+| Best for | Short queries | Long-running queries |
 
 ### Migration from SQLExecuteQueryOperator
-
-The custom `SnowflakeSqlApiOperator` is a drop-in replacement using the same `conn_id` parameter:
 
 ```python
 # Before: SQLExecuteQueryOperator
@@ -168,7 +169,8 @@ task = SnowflakeSqlApiOperator(
     task_id="query_snowflake",
     conn_id="snowflake_default",  # Same parameter!
     sql="SELECT CURRENT_TIMESTAMP();",
-    deferrable=True,              # Add deferrable mode
+    fetch_results=True,           # Get results like SQLExecuteQueryOperator
+    deferrable=True,              # Optional: async execution
 )
 ```
 
@@ -185,9 +187,7 @@ task = SnowflakeSqlApiOperator(
 
 ## Resources
 
-- [Create a Snowflake Connection in Airflow](https://www.astronomer.io/docs/learn/connections/snowflake) - Astronomer's complete guide to Snowflake connections
-- [Orchestrate Snowflake Queries with Airflow](https://www.astronomer.io/docs/learn/airflow-snowflake) - Full integration tutorial
+- [Create a Snowflake Connection in Airflow](https://www.astronomer.io/docs/learn/connections/snowflake)
+- [Orchestrate Snowflake Queries with Airflow](https://www.astronomer.io/docs/learn/airflow-snowflake)
 - [Snowflake SQL API Docs](https://docs.snowflake.com/en/developer-guide/sql-api/intro.html)
 - [Airflow Deferrable Operators](https://airflow.apache.org/docs/apache-airflow/stable/authoring-and-scheduling/deferring.html)
-- [Astronomer Docs](https://www.astronomer.io/docs/)
-

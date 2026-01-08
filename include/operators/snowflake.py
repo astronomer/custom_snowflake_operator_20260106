@@ -14,10 +14,11 @@ class SnowflakeSqlApiOperator(SnowflakeSqlApiOperatorBase):
     SnowflakeSqlApiOperator with optional result fetching.
 
     Extends SnowflakeSqlApiOperator to optionally fetch query results.
-    When do_xcom_push=True, returns actual results; otherwise returns execution ID.
+    By default, returns query IDs (same as base operator). When fetch_results=True,
+    fetches and returns actual query results.
 
     :param conn_id: Snowflake connection ID (mapped to snowflake_conn_id)
-    :param do_xcom_push: Whether to fetch and return query results (default: True)
+    :param fetch_results: Whether to fetch and return query results (default: False)
     :param return_last: Whether to return only the last query result when multiple
         statements are executed (default: True)
     """
@@ -26,35 +27,63 @@ class SnowflakeSqlApiOperator(SnowflakeSqlApiOperatorBase):
         self,
         *,
         conn_id: str = "snowflake_default",
-        do_xcom_push: bool = True,
+        fetch_results: bool = False,
         return_last: bool = True,
         **kwargs,
     ) -> None:
         # Map conn_id to snowflake_conn_id for base class
         super().__init__(snowflake_conn_id=conn_id, **kwargs)
-        self.do_xcom_push = do_xcom_push
+        self.fetch_results = fetch_results
         self.return_last = return_last
 
     def _fetch_results(self) -> Any:
-        """Fetch query results from Snowflake."""
+        """
+        Fetch query results from Snowflake.
+
+        For multi-statement queries, first retrieves individual statement handles
+        from the status response, then fetches results for each statement.
+
+        Returns results as list of tuples to match SQLExecuteQueryOperator format.
+        """
         hook = SnowflakeSqlApiHook(
             snowflake_conn_id=self.snowflake_conn_id,
             token_life_time=self.token_life_time,
             token_renewal_delta=self.token_renewal_delta,
         )
 
-        results = [hook.get_sql_api_query_status(qid) for qid in self.query_ids]
+        # Collect all statement handles (may differ from query_ids for multi-statement)
+        all_handles = []
+        for qid in self.query_ids:
+            # Get status to retrieve statement_handles for multi-statement queries
+            status = hook.get_sql_api_query_status(qid)
+            handles = status.get("statement_handles", [])
+            if handles:
+                all_handles.extend(handles)
+            else:
+                # Single statement - use the query ID directly
+                all_handles.append(qid)
 
-        # Return last result only if return_last is True and multiple statements were executed
+        # Fetch results for each statement handle
+        results = []
+        for handle in all_handles:
+            data = hook.get_result_from_successful_sql_api_query(handle)
+            # Convert list of dicts to list of tuples to match SQLExecuteQueryOperator
+            rows = [tuple(row.values()) for row in data]
+            results.append(rows)
+
+        # Return last result only if return_last is True and multiple statements
         if self.return_last and len(results) > 1:
             return results[-1]
+        # For single query, return just the result, not a list
+        if len(results) == 1:
+            return results[0]
         return results
 
     def execute(self, context: Context) -> Any:
         """Execute SQL using Snowflake SQL API."""
         super().execute(context)
 
-        if not self.do_xcom_push or self.deferrable:
+        if not self.fetch_results or self.deferrable:
             return self.query_ids
 
         return self._fetch_results()
@@ -65,7 +94,7 @@ class SnowflakeSqlApiOperator(SnowflakeSqlApiOperatorBase):
         """Callback for deferrable mode."""
         super().execute_complete(context, event)
 
-        if not self.do_xcom_push:
+        if not self.fetch_results:
             return self.query_ids
 
         return self._fetch_results()
