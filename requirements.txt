@@ -1,2 +1,11 @@
 # Astro Runtime includes the following pre-installed providers packages: https://www.astronomer.io/docs/astro/runtime-image-architecture#provider-packages
 apache-airflow-providers-snowflake
+
+# Direct Snowflake connector usage (also a dependency of the provider above)
+snowflake-connector-python
+cryptography  # For key-pair authentication
+
+# OpenLineage support for direct snowflake.connector usage
+sqlglot  # SQL parsing for lineage extraction
+openlineage-python  # OpenLineage event emission
+
