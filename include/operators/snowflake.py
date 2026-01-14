@@ -80,10 +80,17 @@ class SnowflakeSqlApiOperator(SnowflakeSqlApiOperatorBase):
         return results
 
     def execute(self, context: Context) -> Any:
-        """Execute SQL using Snowflake SQL API."""
+        """
+        Execute SQL using Snowflake SQL API.
+
+        In deferrable mode, if the query is deferred, the base class raises
+        ``TaskDeferred`` and ``execute_complete`` handles the result fetching.
+        If we reach the code after ``super().execute()``, it means the query
+        completed (either synchronously or deferrable mode didn't defer).
+        """
         super().execute(context)
 
-        if not self.fetch_results or self.deferrable:
+        if not self.fetch_results:
             return self.query_ids
 
         return self._fetch_results()
